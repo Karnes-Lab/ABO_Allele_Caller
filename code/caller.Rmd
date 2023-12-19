@@ -1,0 +1,780 @@
+---
+title: "ABO Caller"
+author: "Jason Giles"
+date: "2023-09-22"
+output: html_document
+---
+
+#<!-- This is a description for my R document. -->
+  
+## Version control
+## Repository: https://github.com/Karnes-Lab/ABO_Allele_Caller
+## Commit:
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Print session information
+sessionInfo()
+
+```
+
+```{r}
+rm(list = ls(all = TRUE))
+library(R.utils)
+library(XML)
+library(tidyverse)
+library(dplyr)
+library(doParallel)
+library(foreach)
+library(Biostrings)
+library(doParallel)
+```
+
+
+# Using the "dbRBC_allelevFINAL.xml" data file extracted from BD MUT database
+# Keeps only the elements where the allele is "ABO" not other blood groups (RHE) etc
+```{r}
+
+# Step 1: Parse the XML file
+xml_data <- xmlParse("dbRBC_allelevFINAL.xml")
+
+
+# Remove <allele_info>, <long_protein>, and <short_protein> elements
+remove_elements <- c("//allele_info", "//long_protein", "//short_protein")
+for (element in remove_elements) {
+  nodes <- getNodeSet(xml_data, element)
+  for (node in nodes) {
+    removeNodes(node)
+  }
+}
+
+# Step 2: Find all <allele> elements with common_name starting with 'ABO'
+allele_elements <- getNodeSet(xml_data, "//allele[starts-with(common_name, 'ABO')]")
+
+# Initialize variables to store common_name and sequences
+current_common_name <- NULL
+ncr_sequences <- list()
+
+# Open a .fasta file for writing
+output_file <- "ABO_alleles_FINAL_10_18_23.fasta"
+file_conn <- file(output_file, "w")
+
+# Loop through <allele> elements
+for (i in seq_along(allele_elements)) {
+  allele_element <- allele_elements[[i]]
+  
+  # Extract the <common_name> element value and process it
+  common_name <- gsub("[?]", "", xmlValue(allele_element[["common_name"]]))
+  common_name <- paste(">", common_name, sep = "")  # Add ">" to the beginning
+  
+  # Extract the <block> elements within the current <allele> element
+  block_elements <- getNodeSet(allele_element, ".//block")
+  
+  # Loop through <block> elements
+  for (j in seq_along(block_elements)) {
+    block_element <- block_elements[[j]]
+    
+    # Extract the <type> element value
+    type_value <- xmlValue(block_element[["type"]])
+    
+    # Check if <type> is "NCR"
+    if (type_value != "CR") {
+      # Extract the <sequence> element value
+      sequence_value <- xmlValue(block_element[["sequence"]])
+      
+      # If common_name changes, write to the file
+      if (!identical(common_name, current_common_name)) {
+        if (!is.null(current_common_name)) {
+          cat("\n", file = file_conn)
+        }
+        cat(common_name, "\n", file = file_conn)
+        cat(sequence_value,"\n", file = file_conn)
+        current_common_name <- common_name
+      } else {
+        cat(sequence_value,"\n", file = file_conn)
+      }
+    }
+  }
+}
+
+# Close the output file
+close(file_conn)
+
+cat("Data written to", output_file, "\n")
+
+```
+```{r}
+# Read the file
+#file_path <- "Q:/PharmPractice/Karnes Workgroup/08-Personal-Folders/jasongiles/ABO_caller_jg/UCSC_ABO_gene_chr9_133254666-133280068_dbmut_match.fasta"  
+file_path <- "Q:/PharmPractice/Karnes Workgroup/08-Personal-Folders/jasongiles/ABO_caller_jg/aboA101011.fasta"  
+lines <- readLines(file_path)
+
+# Initialize variables
+current_sequence <- NULL
+sequences <- list()
+
+# Loop through lines
+for (line in lines) {
+  if (substr(line, 1, 1) == ">") {
+    # New sequence identifier
+    current_sequence <- list(name = line, sequence = "")
+  } else if (!is.null(current_sequence)) {
+    # Concatenate sequence lines
+    current_sequence$sequence <- paste0(current_sequence$sequence, line)
+  }
+  
+  # Check if the current line is empty
+  if (nchar(trimws(line)) == 0 && !is.null(current_sequence)) {
+    sequences <- c(sequences, list(current_sequence))
+    current_sequence <- NULL
+  }
+}
+
+# Handle the last sequence
+if (!is.null(current_sequence)) {
+  sequences <- c(sequences, list(current_sequence))
+}
+
+#-----------
+
+
+# Convert the list of lists to a data frame
+matrix_2 <- as.matrix((do.call(rbind, sequences)))
+df_3 <- as.data.frame(do.call(rbind, sequences))
+df_4 <- rbind(df_2, df_3)
+
+
+#----------------- Write out if you do not want to separate the nucleotides into individual columns
+
+file_path <- ".fasta"
+
+# Open the file for writing
+file_conn <- file(file_path, "w")
+
+# Iterate through each row in the dataframe
+for (i in 1:nrow(df_2)) {
+  # Write the first column of the current row to a new line
+  class(df_2[i, 1])
+  cat(as.character(df_2[i, 1]), file = file_conn, sep = "\n")
+
+  # Write all other columns in the current row to the same line without spaces
+  cat(paste0(df_2[i, -1], collapse = ""), file = file_conn, sep = "\n")
+
+}
+
+
+# Close the file connection
+close(file_conn)
+
+
+#------------------------------------------------------------------
+# Split the strings and create new columns
+df_split <- tidyr::separate(df_4, col = sequence, into = paste0("Char_", 1:max(nchar(df_4$sequence))),
+                             sep = "", remove = FALSE)
+
+# Print the resulting data frame
+print(df_split)
+df_split <- df_split[,c(-2,-3)]
+#----------------------------------------------------------------- Write out if you want a fasta with only 80 characters per line
+file_path <- "UCSC_reference_dbmut_a101011_allele.fasta"
+
+
+# Open the file for writing
+file_conn <- file(file_path, "w")
+
+# Set the number of columns per line
+columns_per_line <- 80
+
+for (i in 1:nrow(df_split)) {
+  # Write the first column of the current row to a new line
+  cat(as.character(df_split[i, 1]), file = file_conn, sep = "\n")
+
+  # Write the rest of the columns in chunks of 80 columns per line
+  for (j in seq(2, ncol(df_split), by = columns_per_line)) {
+    cat(paste0(df_split[i, j:min(j + columns_per_line - 1, ncol(df_split))], collapse = ""), file = file_conn, sep = "\n")
+  }
+}
+
+# Close the file connection
+close(file_conn)
+
+
+
+```
+
+
+# Making the final.xml a csv for reading in and comparing against the original alleles xml
+```{r}
+
+xml_data <- xmlParse("dbRBC_allelevFINAL.xml")
+
+
+# Remove <allele_info>, <long_protein>, and <short_protein> elements
+remove_elements <- c("//allele_info", "//long_protein", "//short_protein")
+for (element in remove_elements) {
+  nodes <- getNodeSet(xml_data, element)
+  for (node in nodes) {
+    removeNodes(node)
+  }
+}
+
+# Step 2: Find all <allele> elements with common_name starting with 'ABO'
+allele_elements <- getNodeSet(xml_data, "//allele[starts-with(common_name, 'ABO')]")
+
+# Initialize variables to store common_name and sequences
+current_common_name <- NULL
+ncr_sequences <- list()
+
+# Open a .fasta file for writing
+output_file <- "ABO_alleles_final_commasep.csv"
+file_conn <- file(output_file, "w")
+
+# Loop through <allele> elements
+for (i in seq_along(allele_elements)) {
+  allele_element <- allele_elements[[i]]
+  
+  # Extract the <common_name> element value and process it
+  common_name <- gsub("[?]", "", xmlValue(allele_element[["common_name"]]))
+  common_name <- paste(">", common_name, sep = "")  # Add ">" to the beginning
+  
+  # Extract the <block> elements within the current <allele> element
+  block_elements <- getNodeSet(allele_element, ".//block")
+  
+  # Loop through <block> elements
+  for (j in seq_along(block_elements)) {
+    block_element <- block_elements[[j]]
+    
+    # Extract the <type> element value
+    type_value <- xmlValue(block_element[["type"]])
+    
+    # Check if <type> is "NCR"
+    if (type_value != "CR") {
+      # Extract the <sequence> element value
+      sequence_value <- xmlValue(block_element[["sequence"]])
+      
+      # If common_name changes, write to the file
+      if (!identical(common_name, current_common_name)) {
+        if (!is.null(current_common_name)) {
+          cat("\n", file = file_conn)
+        }
+        cat(common_name, ",", file = file_conn)
+        cat(sequence_value, file = file_conn)
+        current_common_name <- common_name
+      } else {
+        cat(sequence_value, file = file_conn)
+      }
+    }
+  }
+}
+
+# Close the output file
+close(file_conn)
+
+cat("Data written to", output_file, "\n")
+```
+
+
+# Read in "CSV" to replace asterisk in fasta
+```{r}
+abo_alleles_csv_final_df <- read_csv("ABO_alleles_final_commasep.csv", col_names = F)
+colnames(abo_alleles_csv_final_df) <- c("ABO_Allele", "sequence")
+
+
+# Write out just the alleles aka rownames to a file
+abo_alleles_csv_final_df %>% dplyr::select(ABO_Allele) %>% write.csv(file = "ABO_alleles_final_csv_allele_names.csv", row.names = F)
+
+# Split the strings and create new columns
+abo_alleles_csv_final_df_split <- tidyr::separate(abo_alleles_csv_final_df, col = sequence, into = paste0("bp_", 1:(max(nchar(abo_alleles_csv_final_df$sequence))+1)), sep = "", remove = FALSE)
+
+# Print the resulting data frame to check last nucleotide base
+print(abo_alleles_csv_final_df_split$bp_19611[1])
+
+print(abo_alleles_csv_final_df_split[1,1])
+print(abo_alleles_csv_final_df_split$ABO_Allele[1])
+
+
+
+abo_alleles_csv_final_df_split_recode <- abo_alleles_csv_final_df_split[,-3]
+
+
+
+# Record the start time
+# start_time_cumulative <- start_time <- Sys.time()
+# 
+# # LOOP TO REPLACE '*' WITH REFERENCE NUCLEOTIDE AT THAT LOCATION
+# for (i in 3:ncol(abo_alleles_csv_final_df_split_recode)) {
+#   for (j in 1:nrow(abo_alleles_csv_final_df_split_recode)) {
+#     if (abo_alleles_csv_final_df_split_recode[j, i] == "*") {
+#       # Replace with the value in the first row's column
+#       abo_alleles_csv_final_df_split_recode[j, i] <- abo_alleles_csv_final_df_split_recode[1, i]
+#     }
+#   }
+#   counterr <- i
+#   if (counterr %% 1000 == 0) {
+#     # Calculate and print the time taken for the last 100 columns
+#     elapsed_time <- Sys.time() - start_time
+#     cat("Processed columns:", counterr, "Elapsed Time:", elapsed_time, "\n")
+#     
+#     
+#     # Record the start time for the next 100 columns
+#     start_time <- Sys.time()
+#     # Calculate and print the total cumulative time
+#     total_elapsed_time <- Sys.time() - start_time_cumulative
+#     cat("Total Cumulative Time:", total_elapsed_time, "\n")
+#   }
+# }
+
+#-------------------------------------------------------------------------------------------------------
+# Attempt to use a subset instead of second for loop 
+
+# Record the start time
+start_time_cumulative <- start_time <- Sys.time()
+
+# LOOP TO REPLACE '*' WITH REFERENCE NUCLEOTIDE AT THAT LOCATION
+for (i in 3:ncol(abo_alleles_csv_final_df_split_recode)) {
+  abo_alleles_csv_final_df_split_recode[abo_alleles_csv_final_df_split_recode[,i]=="*",i] <- abo_alleles_csv_final_df_split_recode[1,i]
+  counterr <- i
+  if (counterr %% 1000 == 0) {
+    # Calculate and print the time taken for the last 100 columns
+    elapsed_time <- Sys.time() - start_time
+    cat("Processed columns:", counterr, "Elapsed Time:", elapsed_time, "\n")
+    
+    
+    # Record the start time for the next 100 columns
+    start_time <- Sys.time()
+    # Calculate and print the total cumulative time
+    total_elapsed_time <- Sys.time() - start_time_cumulative
+    cat("Total Cumulative Time:", total_elapsed_time, "\n")
+  }
+}
+
+#-------------------------------------------------------------------------------------------------------
+
+
+
+
+abo_alleles_csv_final_df_split_recode <- abo_alleles_csv_final_df_split_recode[,-2]
+abo_alleles_csv_final_df_split_recode2 <- abo_alleles_csv_final_df_split_recode
+
+abo_alleles_csv_final_df_split_recode2[,-1] <- sapply(abo_alleles_csv_final_df_split_recode2[,-1], gsub, pattern='\\.', replacement='')
+
+# Specify the file path
+file_path <- "ABO_alleles_fixed_asterisk_rmperiods.fasta"
+
+# Open the file for writing
+file_conn <- file(file_path, "w")
+
+# Iterate through each row in the dataframe
+for (i in 1:nrow(abo_alleles_csv_final_df_split_recode2)) {
+  # Write the first column of the current row to a new line
+  class(abo_alleles_csv_final_df_split_recode2[i, 1])
+  cat(as.character(abo_alleles_csv_final_df_split_recode2[i, 1]), file = file_conn, sep = "\n")
+
+  # Write all other columns in the current row to the same line without spaces
+  cat(paste0(abo_alleles_csv_final_df_split_recode2[i, -1], collapse = ""), file = file_conn, sep = "\n")
+
+}
+
+
+# Close the file connection
+close(file_conn)
+
+
+```
+
+
+## Read in the new fasta output- Testing the alignment algorithm
+```{r}
+
+fasta_data <- readDNAStringSet("ABO_alleles_fixed_asterisk_rmperiods.fasta", format = "fasta")
+fasta_data
+
+fasta_data[[1]]
+  
+data(BLOSUM100)
+data("BLOSUM62")
+data(PAM250)
+?pairwiseAlignment
+?nucleotideSubstitutionMatrix
+sigma <- nucleotideSubstitutionMatrix(match = 1, mismatch = -3, baseOnly = TRUE)
+sigma # Print out the matrix
+
+alm <- pairwiseAlignment(fasta_data[[1]], fasta_data[[1]], substitutionMatrix=sigma)
+alm
+score(alm)
+
+alm <- pairwiseAlignment(fasta_data[[1]], fasta_data[[6]], substitutionMatrix=sigma)
+alm
+score(alm)
+
+alm <- pairwiseAlignment(fasta_data[[1]], fasta_data[[106]], substitutionMatrix=sigma)
+alm
+score(alm)
+
+alm <- pairwiseAlignment(fasta_data[[1]], fasta_data[[172]], substitutionMatrix=sigma)
+alm
+score(alm)
+
+alm <- pairwiseAlignment(fasta_data[[1]], fasta_data[[172]], substitutionMatrix=sigma, gapOpening = 50)
+alm
+score(alm)
+
+
+ucsc_data <- readDNAStringSet("UCSC_ABO_gene_chr9_133254666-133280068_dbmut_match.fasta", format = "fasta")
+ucsc_data
+
+?pairwiseAlignment
+ucsc_v_dbmut <- pairwiseAlignment(ucsc_data, fasta_data[[1]], substitutionMatrix=sigma)
+ucsc_v_dbmut
+score(ucsc_v_dbmut)
+nmatch(ucsc_v_dbmut)
+nmismatch(ucsc_v_dbmut)
+mismatchSummary(ucsc_v_dbmut)
+nindel(pattern(ucsc_v_dbmut))
+indel(ucsc_v_dbmut)
+insert_list <- as.data.frame(insertion(ucsc_v_dbmut))
+deletion_list <- as.data.frame(deletion(ucsc_v_dbmut))
+
+
+#mismatchTable(ucsc_v_dbmut) %>% write_csv(file = "mismatch_table_ucsc_vs_dbmut_a10101.csv")
+
+ucsc_v_dbmut_O_allele <- pairwiseAlignment(ucsc_data, fasta_data[[177]],  substitutionMatrix=sigma)
+ucsc_v_dbmut_O_allele
+score(ucsc_v_dbmut_O_allele)
+nmatch(ucsc_v_dbmut_O_allele)
+nmismatch(ucsc_v_dbmut_O_allele)
+mismatchSummary(ucsc_v_dbmut_O_allele)
+mismatchTable(ucsc_v_dbmut_O_allele)
+summary(ucsc_v_dbmut_O_allele)
+indel(ucsc_v_dbmut_O_allele)
+
+#-----------------------
+ucsc_v_dbmut_O_allele <- pairwiseAlignment(fasta_data[[1]], fasta_data[[172]], substitutionMatrix=sigma)
+ucsc_v_dbmut_O_allele
+score(ucsc_v_dbmut_O_allele)
+nmatch(ucsc_v_dbmut_O_allele)
+nmismatch(ucsc_v_dbmut_O_allele)
+mismatchSummary(ucsc_v_dbmut_O_allele)
+mismatchTable(ucsc_v_dbmut_O_allele)
+summary(ucsc_v_dbmut_O_allele)
+indel(ucsc_v_dbmut_O_allele)
+
+# -------------------
+ucsc_v_dbmut_B_allele <- pairwiseAlignment(ucsc_data, fasta_data[[106]],  substitutionMatrix=sigma)
+ucsc_v_dbmut_B_allele
+score(ucsc_v_dbmut_B_allele)
+nmatch(ucsc_v_dbmut_B_allele)
+nmismatch(ucsc_v_dbmut_B_allele)
+mismatchSummary(ucsc_v_dbmut_B_allele)
+mismatchTable(ucsc_v_dbmut_B_allele)
+summary(ucsc_v_dbmut_B_allele)
+indel(ucsc_v_dbmut_B_allele)
+#-----------------comparing the files to see where they differ....
+"22548" %in% deletion_list$start
+which("22548" %in% deletion_list$start, arr.ind = T)
+which(deletion_list$start=="22548", arr.ind = T)
+which(deletion_list=="22548", arr.ind = T)
+```
+
+
+# Code to grab the insertions and deletions from the pariwisealignment object
+```{r}
+indelSeqs <- function(x)
+{
+    stopifnot(is(x, "PairwiseAlignments"), length(x) == 1L)
+    aligned_pattern <- pattern(x)
+    aligned_subject <- subject(x)
+
+    ## Compute insertion ranges with respect to aligned pattern.
+    ins_ranges <- indel(aligned_subject)[[1L]]
+    shift <- c(0L, head(cumsum(width(ins_ranges)), n=-1L))
+    ins_ranges <- shift(ins_ranges, shift)
+
+    ## Compute deletion ranges with respect to aligned subject.
+    del_ranges <- indel(aligned_pattern)[[1L]]
+    shift <- c(0L, head(cumsum(width(del_ranges)), n=-1L))
+    del_ranges <- shift(del_ranges, shift)
+
+    ## Turn 'aligned_pattern' and 'aligned_subject' into XString
+    ## objects.
+    ins_seqs_class <- paste0(seqtype(aligned_pattern), "String")
+    aligned_pattern <- as(as.character(aligned_pattern),
+                          ins_seqs_class)
+    del_seqs_class <- paste0(seqtype(aligned_subject), "String")
+    aligned_subject <- as(as.character(aligned_subject),
+                          del_seqs_class)
+
+    ## Extract the indel sequences.
+    ins_seqs <- extractAt(aligned_pattern, ins_ranges)
+    del_seqs <- extractAt(aligned_subject, del_ranges)
+    list(insertion=ins_seqs, deletion=del_seqs)
+}
+indelSeqs(ucsc_v_dbmut)
+```
+
+
+
+
+
+
+
+
+
+## Creating "mock" sequences of replaced asterisks with A/T/G/C values to used as "patient" data
+```{r}
+
+abo_alleles_csv_final_df_split_recode_simulate_alleles <- abo_alleles_csv_final_df_split_recode[,-2]
+
+# Set the number of columns per line
+columns_per_line <- 80
+start_time <- Sys.time()
+# Set Seed!
+set.seed(777)  
+for (iter in 51:100) {
+  # Create a copy of the original data frame for each iteration
+  temp_dataframe <- abo_alleles_csv_final_df_split_recode_simulate_alleles
+  file_path <- paste0("ABO_mutated_alleles_", iter, ".fasta")
+  file_conn <- file(file_path, "w")
+  for (i in 1:nrow(temp_dataframe)) {
+    asterisk_indices <- which(temp_dataframe[i, -1 ] == "*") + 1
+    # Randomly select  indices 
+    replace_indices <- sample(asterisk_indices, min(100, length(asterisk_indices)))
+    
+    # Replace the selected indices with random values from A, G, T, C
+    temp_dataframe[i, replace_indices] <- as.list(sample(c("A", "G", "T", "C"), length(replace_indices), replace = TRUE))
+    # Replace the remaining asterisks with values from row 1
+    remaining_asterisk_indices <- which(temp_dataframe[i, ] == "*")
+    temp_dataframe[i, remaining_asterisk_indices] <- temp_dataframe[1, remaining_asterisk_indices]
+    
+    #Remove the periods from the sequences
+    for (col in seq_along(temp_dataframe[i, -1])) {
+      temp_dataframe[i, col + 1] <- gsub("\\.", "", temp_dataframe[i, col + 1])
+    }
+    cat(as.character(temp_dataframe[i, 1]), file = file_conn, sep = "\n")
+    # Write all other columns in the current row to the same line without spaces
+    cat(paste0(temp_dataframe[i, -1], collapse = ""), file = file_conn, sep = "\n")
+    elapsed_time <- Sys.time() - start_time
+    cat("Processed columns:", i, "Elapsed Time:", elapsed_time, "\n")
+    start_time <- Sys.time()
+  #   # Write the rest of the columns in chunks of 80 columns per line
+  #   for (j in seq(2, ncol(temp_dataframe), by = columns_per_line)) {
+  #     cat(paste0(temp_dataframe[i, j:min(j + columns_per_line - 1, ncol(temp_dataframe))], collapse = ""), file = file_conn, sep = "\n")
+  # }
+   }
+  close(file_conn)
+}
+#---------------------------------optimization?
+
+
+# Set Seed!
+set.seed(777)  
+start_time_cumulative <- start_time <- Sys.time()
+
+for (iter in 1:100) {
+  file_path <- paste0("ABO_mutated_100_variants_per_alleles_", iter, ".fasta")
+  file_conn <- file(file_path, "w")
+  simulated_data <- abo_alleles_csv_final_df_split_recode_simulate_alleles
+  for (i in 1:nrow(abo_alleles_csv_final_df_split_recode_simulate_alleles)) {
+    asterisk_indices <- which(abo_alleles_csv_final_df_split_recode_simulate_alleles[i, ] == "*")
+    replace_indices <- sample(asterisk_indices, min(100, length(asterisk_indices)))
+
+    simulated_data[i, replace_indices] <- as.list(sample(c("A", "G", "T", "C"), length(replace_indices), replace = TRUE))
+    remaining_asterisk_indices <- which(simulated_data[i, ] == "*")
+    simulated_data[i, remaining_asterisk_indices] <- simulated_data[1, remaining_asterisk_indices]
+
+    simulated_data[i, -1] <- as.list(gsub("\\.", "", simulated_data[i, -1]))
+
+    cat(as.character(simulated_data[i, 1]), file = file_conn, sep = "\n")
+    # Write all other columns in the current row to the same line without spaces
+    cat(paste0(simulated_data[i, -1], collapse = ""), file = file_conn, sep = "\n")
+
+    elapsed_time <- format(Sys.time() - start_time)
+    cat("Processed row:", i, "and fasta #", iter, "Elapsed Time:", elapsed_time, "\n")
+    start_time <- Sys.time()
+  }
+  total_elapsed_time <- format(Sys.time() - start_time_cumulative)
+  cat("Total Cumulative Time:", total_elapsed_time, "\n")
+  close(file_conn)
+}
+close(file_conn)
+#------------------------- 1% of the length of the sequences
+
+# Set Seed!
+set.seed(777)  
+start_time_cumulative <- start_time <- Sys.time()
+
+for (iter in 1:100) {
+  file_path <- paste0("ABO_mutated_1_percent_variants_per_alleles_", iter, ".fasta")
+  file_conn <- file(file_path, "w")
+  simulated_data <- abo_alleles_csv_final_df_split_recode_simulate_alleles
+  for (i in 1:nrow(abo_alleles_csv_final_df_split_recode_simulate_alleles)) {
+    asterisk_indices <- which(abo_alleles_csv_final_df_split_recode_simulate_alleles[i, ] == "*")
+    replace_indices <- sample(asterisk_indices, min((ncol(abo_alleles_csv_final_df_split_recode_simulate_alleles)/100), length(asterisk_indices)))
+
+    simulated_data[i, replace_indices] <- as.list(sample(c("A", "G", "T", "C"), length(replace_indices), replace = TRUE))
+    remaining_asterisk_indices <- which(simulated_data[i, ] == "*")
+    simulated_data[i, remaining_asterisk_indices] <- simulated_data[1, remaining_asterisk_indices]
+
+    simulated_data[i, -1] <- as.list(gsub("\\.", "", simulated_data[i, -1]))
+
+    cat(as.character(simulated_data[i, 1]), file = file_conn, sep = "\n")
+    # Write all other columns in the current row to the same line without spaces
+    cat(paste0(simulated_data[i, -1], collapse = ""), file = file_conn, sep = "\n")
+
+    elapsed_time <- format(Sys.time() - start_time)
+    cat("Processed row:", i, "and fasta #", iter, "Elapsed Time:", elapsed_time, "\n")
+    start_time <- Sys.time()
+  }
+  total_elapsed_time <- format(Sys.time() - start_time_cumulative)
+  cat("Total Cumulative Time:", total_elapsed_time, "\n")
+  close(file_conn)
+}
+close(file_conn)
+
+
+
+#------------------------- 5% of the length of the sequences
+
+# Set Seed!
+set.seed(777)  
+start_time_cumulative <- start_time <- Sys.time()
+
+for (iter in 1:100) {
+  file_path <- paste0("ABO_mutated_5_percent_variants_per_alleles_", iter, ".fasta")
+  file_conn <- file(file_path, "w")
+  simulated_data <- abo_alleles_csv_final_df_split_recode_simulate_alleles
+  for (i in 1:nrow(abo_alleles_csv_final_df_split_recode_simulate_alleles)) {
+    asterisk_indices <- which(abo_alleles_csv_final_df_split_recode_simulate_alleles[i, ] == "*")
+    replace_indices <- sample(asterisk_indices, min((ncol(abo_alleles_csv_final_df_split_recode_simulate_alleles)/20), length(asterisk_indices)))
+
+    simulated_data[i, replace_indices] <- as.list(sample(c("A", "G", "T", "C"), length(replace_indices), replace = TRUE))
+    remaining_asterisk_indices <- which(simulated_data[i, ] == "*")
+    simulated_data[i, remaining_asterisk_indices] <- simulated_data[1, remaining_asterisk_indices]
+
+    simulated_data[i, -1] <- as.list(gsub("\\.", "", simulated_data[i, -1]))
+
+    cat(as.character(simulated_data[i, 1]), file = file_conn, sep = "\n")
+    # Write all other columns in the current row to the same line without spaces
+    cat(paste0(simulated_data[i, -1], collapse = ""), file = file_conn, sep = "\n")
+
+    elapsed_time <- format(Sys.time() - start_time)
+    cat("Processed row:", i, "and fasta #", iter, "Elapsed Time:", elapsed_time, "\n")
+    start_time <- Sys.time()
+  }
+  total_elapsed_time <- format(Sys.time() - start_time_cumulative)
+  cat("Total Cumulative Time:", total_elapsed_time, "\n")
+  close(file_conn)
+}
+close(file_conn)
+
+
+```
+
+##Running through simulated dataset to call alleles for "patients" based on reference alleles - Code below is own R scirpt "ABO_caller"
+```{r}
+
+sigma <- nucleotideSubstitutionMatrix(match = 1, mismatch = -3, baseOnly = TRUE)
+
+onehundred_mut_align_df <- data.frame(matrix(ncol = nrow(abo_alleles_csv_final_df)+3, nrow =nrow(abo_alleles_csv_final_df) ))
+
+abo_alleles_names<- read_csv("ABO_alleles_final_csv_allele_names.csv", col_names = T)
+
+
+colnames(onehundred_mut_align_df) <- c(abo_alleles_names$ABO_Allele,"Best_match","Patient_id","Incorrect_call")
+rownames(onehundred_mut_align_df) <- paste0("patients_", abo_alleles_names$ABO_Allele)
+
+
+fasta_100_1 <- readDNAStringSet("simulated_genotypes/onehundred_bases_mutated/ABO_mutated_100_variants_per_alleles_1.fasta", format = "fasta")
+fasta_100_1
+
+for (jow in 1:280){
+  for (i in 1:280){
+    alighn <- pairwiseAlignment(fasta_100_1[[jow]], fasta_100_1[[i]],  substitutionMatrix=sigma)
+    print(c(jow,i))
+    scroree <- score(alighn)
+    print(scroree)
+    onehundred_mut_align_df[jow,i] <- scroree
+  }
+  
+  onehundred_mut_align_df$Patient_id[jow] <- sub("patients_", "", rownames(onehundred_mut_align_df)[jow])
+  indx <- which.max(onehundred_mut_align_df[jow,])
+  onehundred_mut_align_df$Best_match[jow] <- colnames(onehundred_mut_align_df[indx])
+  print(onehundred_mut_align_df$Best_match[jow])
+  onehundred_mut_align_df$Incorrect_call[jow] <- if_else(onehundred_mut_align_df$Patient_id[jow] == onehundred_mut_align_df$Best_match[jow], 0, 1)
+}
+
+# Write out just the alleles scores to a file
+onehundred_mut_align_df %>% write.csv(file = "ABO_alleles_onehundred_1.csv", row.names = T)
+
+
+onehundred_mut_align_df$Best_match <- apply(onehundred_mut_align_df, 1, max, na.rm = T)
+onehundred_mut_align_df$Best_match
+which(onehundred_mut_align_df[1,], na.rm = T)
+which.max(onehundred_mut_align_df[1,])
+
+indx <- which.max(onehundred_mut_align_df[1,])
+colnames(onehundred_mut_align_df[indx])
+
+
+#------------------------------------------ FOR EACH PARALLIZE
+
+sigma <- nucleotideSubstitutionMatrix(match = 1, mismatch = -3, baseOnly = TRUE)
+
+# Set up parallel processing
+cores <- detectCores()
+cl <- makeCluster(cores - 10) 
+registerDoParallel(cl)
+start_time <- Sys.time()
+rm(onehundred_mut_align_df)
+# onehundred_mut_align_df <- data.frame(matrix(ncol = nrow(abo_alleles_csv_final_df)+3, nrow =nrow(abo_alleles_csv_final_df) ))
+# colnames(onehundred_mut_align_df) <- c(abo_alleles_names$ABO_Allele,"Best_match","Patient_id","Incorrect_call")
+# rownames(onehundred_mut_align_df) <- paste0("patients_", abo_alleles_names$ABO_Allele)
+
+onehundred_mut_align_df <- data.frame(matrix(nrow = 280, ncol = 280))
+colnames(onehundred_mut_align_df) <- c(abo_alleles_names$ABO_Allele)
+rownames(onehundred_mut_align_df) <- paste0("patients_", abo_alleles_names$ABO_Allele)
+  
+for (jow in 101:280){
+  onehundred_mut_align_df[jow,] <- foreach (i = 1:280, .packages = "Biostrings", .combine = "cbind") %dopar% {
+    alighn <- pairwiseAlignment(fasta_100_1[[jow]], fasta_100_1[[i]],  substitutionMatrix=sigma)
+    print(c(jow,i))
+    scoree <- score(alighn)
+    return(scoree)
+    #print(scroree)
+    #onehundred_mut_align_df[jow,i] <- scroree
+  }
+}
+format(Sys.time() - start_time)
+# Stop parallel processing
+stopCluster(cl)
+
+onehundred_mut_align_df %>% write.csv(file = "ABO_alleles_onehundred_1.csv", row.names = T)
+
+#---------- 
+onehundred_mut_align_df$highest_column <- apply(onehundred_mut_align_df, 1, function(row) {
+  colnames(onehundred_mut_align_df)[which.max(row)]
+})
+#onehundred_mut_align_df$highest_column
+
+onehundred_mut_align_df$Patient_id <- sub("patients_", "", rownames(onehundred_mut_align_df))
+onehundred_mut_align_df$Patient_id
+
+onehundred_mut_align_df$Incorrect_call <- if_else(onehundred_mut_align_df$Patient_id == onehundred_mut_align_df$highest_column, 0, 1)
+
+onehundred_mut_align_df$Incorrect_call
+
+
+onehundred_mut_align_df %>% write.csv(file = "ABO_alleles_onehundred_1.csv", row.names = T)
+
+#onehundred_mut_align_df %>% write_csv(file = "ABO_alleles_onehundred_test.csv")
+
+
+
+
+```
+
+
